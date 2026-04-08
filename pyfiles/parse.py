@@ -9,6 +9,8 @@ to run it:
     python parse.py --input foods.json --output flavor_ratings.csv
 
 NOTE: have realized google has a request limit of 10-15 per MINUTE and 20-50 per day... this probably isnt feasible without spending money
+
+most of the credit of this file goes to gemini with some tweaking and bug fixing manually done
 """
 
 import argparse
