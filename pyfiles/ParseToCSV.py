@@ -5,7 +5,7 @@ from pathlib import Path
 
 INPUT_PATH = Path(r"C:\Users\lulu\OneDrive\Desktop\AI\project\OhillData")
 OUTPUT_PATH = Path(r"C:\Users\lulu\OneDrive\Desktop\AI\project\GeneratedData")
-FLAVOR_PROFILES = ["sweet", "sour", "bitter", "spicy", "dry"]
+FLAVOR_PROFILES = ["sweet", "salty", "savory", "spicy", "sour", "rich"]
 
 
 def load_food_data(path: str) -> list[dict]:
