@@ -1,11 +1,14 @@
 import numpy as np
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics.pairwise import cosine_similarity
 import os
 import pandas as pd
 import glob
+import random
 
 FLAVOR_KEYS = ["sweet", "salty", "savory", "spicy", "sour", "rich"]
 DATA_PATH = "./CategorizedData"
+PERIOD_ORDER = {"Breakfast": 0, "Lunch": 1, "Dinner": 2}
 
 
 class Meal:
@@ -56,12 +59,14 @@ class MealDatabase:
     def all_meals(self):
         return list(self.meals.values())
 
-    def filter(self, date=None, categories=None) -> list[Meal]:
+    def filter(self, date=None, period=None, categories=None) -> list[Meal]:
         results = self.all_meals()
         if categories:
             results = [m for m in results if m.category in categories]
         if date:
             results = [m for m in results if m.date == date]
+        if period:
+            results = [m for m in results if m.period == period]
         return results
 
 
@@ -113,27 +118,17 @@ class UserProfile:
         if not self.history:
             return
 
-        liked = [h for h in self.history if h["rating"] == 1]
-        disliked = [h for h in self.history if h["rating"] == 0]
-
+        last = self.history[-1]
+        meal = self.db.get(last["meal_id"])
+        if not meal:
+            return
         profile = np.array(self.flavor_vector)
-
-        for entry in liked:
-            meal = self.db.get(entry["meal_id"])
-            if meal:
-                direction = np.array(meal.flavor_vector) - profile
-                profile += 0.1 * direction  # nudge toward liked meal
-
-        for entry in disliked:
-            meal = self.db.get(entry["meal_id"])
-            if meal:
-                direction = np.array(meal.flavor_vector) - profile
-                profile -= 0.1 * direction  # nudge away from disliked meal
-
+        direction = np.array(meal.flavor_vector) - profile
+        profile += (0.1 if last["rating"] == 1 else -0.1) * direction
         self.flavor_vector = np.clip(profile, 0, 1).tolist()
 
     def add_to_history(self, meal_id: str, rating: float):
-        if not (rating==0 or rating==1):
+        if not (rating == 0 or rating == 1):
             raise ValueError("Rating must be 0 (dislike) or 1 (like)")
         self.history.append({"meal_id": meal_id, "rating": rating})
         self.update_from_history()
@@ -185,6 +180,97 @@ def load_csv_files_to_db(db, file_paths):
     db._normalize()
 
 
+def score_meals(user_profile, meals):
+    results = []
+    user_vec = np.array(user_profile.flavor_vector)
+
+    for meal in meals:
+        meal_vec = np.array(meal.flavor_vector)
+
+        # Euclidean distance (lower is better)
+        euc = np.linalg.norm(user_vec - meal_vec)
+
+        # Cosine similarity (higher is better)
+        cos = cosine_similarity([user_vec], [meal_vec])[0][0]
+
+        results.append({"meal": meal, "euclidean": euc, "cosine": cos})
+
+    # Normalize Euclidean → similarity
+    max_euc = max(r["euclidean"] for r in results) or 1
+
+    for r in results:
+        r["euc_score"] = 1 - (r["euclidean"] / max_euc)
+
+    # Hybrid score
+    for r in results:
+        r["hybrid"] = 0.5 * r["euc_score"] + 0.5 * r["cosine"]
+
+    return sorted(results, key=lambda x: x["hybrid"], reverse=True)
+
+
+def get_all_dates_periods(db):
+    pairs = {(m.date, m.period) for m in db.all_meals()}
+
+    def sort_key(pair):
+        date, period = pair
+        return (date, PERIOD_ORDER.get(period, 99))
+
+    return sorted(list(pairs), key=sort_key)
+
+
+def recommend_with_feedback(db, profile, date, period, categories, epsilon=0.1):
+    menu = db.filter(date, period, categories)
+    seen_ids = {h["meal_id"] for h in profile.history}
+    menu = [m for m in menu if m.id not in seen_ids]
+
+    while True:
+        print("\n" + "=" * 50)
+
+        scores = score_meals(profile, menu)
+
+        if random.random() < epsilon:
+            print("Exploring: shuffling recommendations...")
+            explore_pool = scores[7:15] if len(scores) >= 20 else scores
+            top5 = random.sample(explore_pool, min(5, len(explore_pool)))
+
+        top5 = scores[:5]
+
+        print("\nTop 5 Recommendations:")
+        print("-" * 50)
+
+        for i, r in enumerate(top5):
+            meal = r["meal"]
+            print(f"{i+1}. {meal.name} ({meal.category})")
+            print(f"   Score: {r['hybrid']:.3f}")
+
+        while True:
+            choice = input("\nWhich did you eat? (1-5, or q to quit): ").strip()
+
+            if choice.lower() == "q":
+                print("Exiting recommendation loop.")
+                return
+
+            if choice in {"1", "2", "3", "4", "5"}:
+                idx = int(choice) - 1
+                if idx < len(top5):
+                    selected = top5[idx]["meal"]
+                    break
+
+            print("Please enter a number 1–5 or q.")
+
+        while True:
+            feedback = input("Did you like it? (1 = yes, 0 = no): ").strip()
+            if feedback in {"0", "1"}:
+                rating = int(feedback)
+                break
+            print("Please enter 1 or 0.")
+
+        profile.add_to_history(selected.id, rating)
+
+        print(f"\nYou selected: {selected.name}")
+        print("Profile updated based on your feedback.")
+
+
 db = MealDatabase()
 print("=" * 50)
 files = glob.glob(f"{DATA_PATH}/*_filled.csv")
@@ -195,3 +281,50 @@ print("=" * 50)
 profile = UserProfile(db)
 profile.input_preferences()
 
+date_filter = "4-08-2026"
+category_filter = [
+    "Omelet/Quiche/Frittata/Strata",
+    "Breakfast",
+    "Breakfast Meat",
+    "Potato",
+    "Pancakes/Waffles/French Toast",
+    "Biscuit",
+    'Traditional 16"',
+    "Burger",
+    "Traditional Sandwich",
+    "Artisan",
+    "Club",
+    "Salad Entrée",
+    "Roast/Braise",
+    "Stir-Fry",
+    "Casserole",
+    "Burrito/Chimichanga",
+    "Taco",
+    "Hot Dog/Corn Dog",
+    "Cream/Bisque/Puree",
+    "BEEF ENTREE",
+    "POULTRY ENTREE",
+    "Pasta/Noodle (Entree)",
+    "Rice",
+    "Grains",
+    "RICE/GRAINS/LEGUMES",
+    "Grilled",
+]
+period_filter = "Lunch"
+
+date_period_pairs = get_all_dates_periods(db)[-3:]
+
+for date_filter, period_filter in date_period_pairs:
+    print("\n" + "=" * 60)
+    print(f"Now recommending for {date_filter} | {period_filter}")
+    print("=" * 60)
+
+    recommend_with_feedback(
+        db,
+        profile,
+        date_filter,
+        period_filter,
+        category_filter,
+    )
+
+profile._display_profile()
